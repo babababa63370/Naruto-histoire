@@ -19,6 +19,23 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 webhooks_perso = {}
 ticket_logs = {}
 rainbow_roles = {}
+bot_data = {} # Variable globale pour la persistance des données
+
+# Fichier pour la persistance des données
+DATA_FILE = "data.json"
+
+def save_data(data):
+    """Sauvegarde les données dans un fichier JSON."""
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
+
+def load_data():
+    """Charge les données depuis un fichier JSON."""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r') as f:
+            return json.load(f)
+    return {"ticket_panels": [], "ticket_logs": {}}
+
 
 # Fonctions utilitaires
 def chunk_text(text, chunk_size=1900):
@@ -49,7 +66,6 @@ async def handle_reopen_ticket(interaction: discord.Interaction):
         await interaction.response.send_message("Ce ticket n'est pas fermé.", ephemeral=True)
         return
 
-    # CORRECTION : Extraire l'ID du créateur de manière sécurisée
     try:
         ticket_creator_id_str = channel.topic.split('(ID: ')[1].split(')')[0]
         ticket_creator = interaction.guild.get_member(int(ticket_creator_id_str))
@@ -67,13 +83,13 @@ async def handle_save_and_delete_ticket(interaction: discord.Interaction):
     await interaction.response.defer()
     channel = interaction.channel
     
-    log_channel_id = ticket_logs.get(interaction.guild.id)
+    log_channel_id = bot_data["ticket_logs"].get(str(interaction.guild.id))
     if not log_channel_id:
         await interaction.followup.send("Le salon de logs n'a pas été défini. Le ticket va être supprimé sans être sauvegardé.", ephemeral=True)
         await channel.delete()
         return
 
-    log_channel = interaction.guild.get_channel(log_channel_id)
+    log_channel = interaction.guild.get_channel(int(log_channel_id))
     if not log_channel:
         await interaction.followup.send("Le salon de logs n'existe plus. Le ticket va être supprimé sans être sauvegardé.", ephemeral=True)
         await channel.delete()
@@ -99,6 +115,23 @@ async def on_ready():
     await bot.tree.sync()
     print(f'Connecté en tant que {bot.user}')
     print('Le bot est prêt à utiliser les commandes slash.')
+    
+    # --- AJOUT IMPORTANT POUR LA PERSISTANCE ---
+    global bot_data
+    bot_data = load_data()
+    
+    # Ajout des vues persistantes pour chaque panneau de ticket
+    for panel in bot_data.get("ticket_panels", []):
+        view = TicketView(
+            category_id=panel['category_id'],
+            roles_ping_ids=panel['roles_ping_ids'],
+            mode=panel['mode'],
+            roles_visibles_ids=panel['roles_visibles_ids'],
+            selector_content=panel.get('selector_content')
+        )
+        bot.add_view(view)
+    # --- FIN DE L'AJOUT ---
+
 
 @bot.tree.command(
     name="get_messages_du_salon",
@@ -300,7 +333,6 @@ class TicketCloseModal(Modal, title="Fermer le ticket"):
 
         await interaction.response.defer()
         
-        # CORRECTION : Extraction sécurisée de l'ID pour éviter les erreurs
         try:
             ticket_creator_id_str = channel.topic.split('(ID: ')[1].split(')')[0]
             ticket_creator = interaction.guild.get_member(int(ticket_creator_id_str))
@@ -531,12 +563,28 @@ async def ticket_setup(
             webhook = webhook_info["webhook"]
             await webhook.send(embed=embed, username=profil_nom, avatar_url=webhook_info["avatar_url"], view=view)
         else:
-            await salon_panel.send(embed=embed, view=view)
+            message = await salon_panel.send(embed=embed, view=view)
             if profil_nom and not webhook_info:
                 await interaction.followup.send(f"Le profil `{profil_nom}` n'a pas été trouvé. Le panneau de ticket a été envoyé avec le profil par défaut.", ephemeral=True)
             elif profil_nom and webhook_info and webhook_info["webhook"].channel_id != salon_panel.id:
                  await interaction.followup.send(f"Le profil `{profil_nom}` a été créé dans un autre salon. Le panneau de ticket a été envoyé avec le profil par défaut.", ephemeral=True)
+
+        # --- AJOUT IMPORTANT POUR LA PERSISTANCE ---
+        panel_data = {
+            "channel_id": salon_panel.id,
+            "message_id": message.id,
+            "category_id": category_tickets.id,
+            "roles_ping_ids": roles_ping_ids,
+            "mode": mode,
+            "roles_visibles_ids": roles_visibles_ids,
+            "selector_content": selecteur_contenu_json
+        }
+        bot_data["ticket_panels"].append(panel_data)
+        save_data(bot_data)
+        # --- FIN DE L'AJOUT ---
+        
         await interaction.followup.send(f"Le panneau de ticket a été envoyé dans {salon_panel.mention}.", ephemeral=True)
+    
     except Exception as e:
         await interaction.followup.send(f"Une erreur s'est produite : {e}", ephemeral=True)
 
@@ -544,7 +592,8 @@ async def ticket_setup(
 @describe(channel="Le salon de logs des tickets.")
 @discord.app_commands.default_permissions(manage_channels=True)
 async def set_ticket_log_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    ticket_logs[interaction.guild.id] = channel.id
+    bot_data["ticket_logs"][str(interaction.guild.id)] = str(channel.id)
+    save_data(bot_data)
     await interaction.response.send_message(f"Le salon de logs des tickets a été défini sur {channel.mention}.", ephemeral=True)
 
 @bot.tree.command(name="delete-ticket", description="Supprime un ticket (action immédiate).")
