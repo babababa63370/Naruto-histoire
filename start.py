@@ -6,7 +6,7 @@ import colorsys
 from discord.ui import Button, View, Modal, TextInput, Select
 from discord.app_commands import describe
 from dotenv import load_dotenv
-from keep_alive import keep_alive
+from keep_alive import keep_alive # 🌐 Importation de la fonction keep_alive
 import asyncio
 
 load_dotenv()
@@ -17,47 +17,57 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 webhooks_perso = {}
-ticket_logs = {}
 rainbow_roles = {}
-bot_data = {} # Variable globale pour la persistance des données
+bot_data = {}
 
 # Fichier pour la persistance des données
-DATA_FILE = "data.json"
+DATA_FILE = "bot_data.json" # 📝 Renommé pour plus de clarté
 
 def save_data(data):
-    """Sauvegarde les données dans un fichier JSON."""
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+    """Sauvegarde les données dans un fichier JSON, avec gestion des erreurs."""
+    try:
+        os.makedirs(os.path.dirname(DATA_FILE) or '.', exist_ok=True)
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+        print("Données sauvegardées avec succès.")
+    except Exception as e:
+        print(f"Erreur lors de la sauvegarde des données : {e}")
 
 def load_data():
-    """Charge les données depuis un fichier JSON."""
+    """Charge les données depuis un fichier JSON, avec gestion des erreurs."""
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE, 'r') as f:
+                content = f.read()
+                if content:
+                    data = json.loads(content)
+                    print("Données chargées avec succès.")
+                    return data
+                else:
+                    print("Le fichier de données est vide. Initialisation des données.")
+        except json.JSONDecodeError as e:
+            print(f"Erreur de décodage JSON lors du chargement : {e}")
+        except Exception as e:
+            print(f"Erreur lors du chargement des données : {e}")
+    
+    print("Fichier de données non trouvé ou erreur. Création de données par défaut.")
     return {"ticket_panels": [], "ticket_logs": {}}
-
 
 # Fonctions utilitaires
 def chunk_text(text, chunk_size=1900):
-    """
-    Découpe une longue chaîne de caractères en morceaux plus petits.
-    """
+    """Découpe une longue chaîne de caractères en morceaux plus petits."""
     return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
 
-# Fonctions de gestion des tickets
 async def handle_claim_ticket(interaction: discord.Interaction):
     channel = interaction.channel
     if not channel.name.startswith("ticket-"):
         await interaction.response.send_message("Ce bouton ne peut être utilisé que dans un ticket.", ephemeral=True)
         return
-
     if "Pris en charge" in channel.topic:
         await interaction.response.send_message("Ce ticket a déjà été réclamé.", ephemeral=True)
         return
-
     new_topic = channel.topic + f" | Pris en charge par {interaction.user.name}"
     await channel.edit(topic=new_topic)
-    
     await interaction.response.send_message(f"Le ticket a été réclamé par {interaction.user.mention}.", ephemeral=False)
 
 async def handle_reopen_ticket(interaction: discord.Interaction):
@@ -65,13 +75,11 @@ async def handle_reopen_ticket(interaction: discord.Interaction):
     if not channel.name.startswith("closed-"):
         await interaction.response.send_message("Ce ticket n'est pas fermé.", ephemeral=True)
         return
-
     try:
         ticket_creator_id_str = channel.topic.split('(ID: ')[1].split(')')[0]
         ticket_creator = interaction.guild.get_member(int(ticket_creator_id_str))
     except (IndexError, ValueError):
         ticket_creator = None
-
     if ticket_creator:
         await channel.edit(name=channel.name.replace("closed-", ""))
         await channel.set_permissions(ticket_creator, view_channel=True, send_messages=True)
@@ -82,45 +90,34 @@ async def handle_reopen_ticket(interaction: discord.Interaction):
 async def handle_save_and_delete_ticket(interaction: discord.Interaction):
     await interaction.response.defer()
     channel = interaction.channel
-    
     log_channel_id = bot_data["ticket_logs"].get(str(interaction.guild.id))
     if not log_channel_id:
         await interaction.followup.send("Le salon de logs n'a pas été défini. Le ticket va être supprimé sans être sauvegardé.", ephemeral=True)
         await channel.delete()
         return
-
     log_channel = interaction.guild.get_channel(int(log_channel_id))
     if not log_channel:
         await interaction.followup.send("Le salon de logs n'existe plus. Le ticket va être supprimé sans être sauvegardé.", ephemeral=True)
         await channel.delete()
         return
-
     log_messages = []
     async for message in channel.history(limit=None, oldest_first=True):
         log_messages.append(f"[{message.created_at.strftime('%Y-%m-%d %H:%M:%S')}] {message.author.name}: {message.content}")
-
     log_content = "\n".join(log_messages)
     chunks = chunk_text(log_content)
-    
     await log_channel.send(f"**Logs pour le ticket de {channel.topic.split('(ID: ')[0].strip()}**")
     for chunk in chunks:
         await log_channel.send(f"```\n{chunk}\n```")
-
     await interaction.followup.send("Logs sauvegardés. Suppression du ticket en cours...", ephemeral=True)
     await channel.delete()
 
-# Événements du bot
 @bot.event
 async def on_ready():
     await bot.tree.sync()
     print(f'Connecté en tant que {bot.user}')
     print('Le bot est prêt à utiliser les commandes slash.')
-    
-    # --- AJOUT IMPORTANT POUR LA PERSISTANCE ---
     global bot_data
     bot_data = load_data()
-    
-    # Ajout des vues persistantes pour chaque panneau de ticket
     for panel in bot_data.get("ticket_panels", []):
         view = TicketView(
             category_id=panel['category_id'],
@@ -130,8 +127,6 @@ async def on_ready():
             selector_content=panel.get('selector_content')
         )
         bot.add_view(view)
-    # --- FIN DE L'AJOUT ---
-
 
 @bot.tree.command(
     name="get_messages_du_salon",
@@ -157,7 +152,6 @@ async def get_messages_command(interaction: discord.Interaction, salon: discord.
     except Exception as e:
         await interaction.followup.send(f"Une erreur s'est produite : {e}")
 
-# Commandes de gestion des webhooks
 @bot.tree.command(
     name="creer-profil-webhook",
     description="Crée un profil de message personnalisé via un webhook avec un nom et un avatar."
@@ -254,7 +248,6 @@ async def supprimer_profil_webhook(interaction: discord.Interaction, nom_profil:
     except Exception as e:
         await interaction.followup.send(f"Une erreur est survenue lors de la suppression du webhook : {e}")
 
-# Fonctions liées aux rôles
 @tasks.loop(seconds=3.0)
 async def change_role_color():
     for guild_id in list(rainbow_roles.keys()):
@@ -314,7 +307,6 @@ async def stop_rainbow_role(interaction: discord.Interaction):
         change_role_color.stop()
     await interaction.response.send_message("L'effet arc-en-ciel a été retiré du rôle et le cycle de couleurs a été arrêté.", ephemeral=True)
 
-# Classes de gestion des tickets
 class TicketCloseModal(Modal, title="Fermer le ticket"):
     raison = TextInput(
         label="Raison de la fermeture",
@@ -330,31 +322,24 @@ class TicketCloseModal(Modal, title="Fermer le ticket"):
         if not channel.name.startswith("ticket-"):
             await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
             return
-
         await interaction.response.defer()
-        
         try:
             ticket_creator_id_str = channel.topic.split('(ID: ')[1].split(')')[0]
             ticket_creator = interaction.guild.get_member(int(ticket_creator_id_str))
         except (IndexError, ValueError):
             ticket_creator = None
-        
         await channel.edit(name=f"closed-{channel.name}")
-        
         if ticket_creator:
             await channel.set_permissions(ticket_creator, view_channel=False)
-
         embed = discord.Embed(
             title="Ticket fermé",
             description=f"Le ticket a été fermé par {interaction.user.mention}.",
             color=discord.Color.red()
         )
         embed.add_field(name="Raison", value=raison, inline=False)
-        
         view = View()
         view.add_item(Button(label="Sauvegarder et Supprimer", style=discord.ButtonStyle.blurple, custom_id="ticket_save_and_delete"))
         view.add_item(Button(label="Réouvrir le Ticket", style=discord.ButtonStyle.green, custom_id="ticket_reopen"))
-        
         await interaction.followup.send(embed=embed, view=view)
 
 class TicketSelect(Select):
@@ -363,18 +348,15 @@ class TicketSelect(Select):
         self.category_id = category_id
         self.roles_visibles_ids = roles_visibles_ids
         self.options_data = []
-
         if options_json:
             try:
                 self.options_data = json.loads(options_json)
             except json.JSONDecodeError as e:
                 print(f"Erreur de décodage JSON dans TicketSelect: {e}")
-                
         for item in self.options_data:
             emoji_value = item.get('emoji', None)
             label = item.get('label', 'Sans label')
             description = item.get('description', None)
-            
             if emoji_value and emoji_value.startswith('<') and emoji_value.endswith('>'):
                 try:
                     emoji = discord.PartialEmoji.from_str(emoji_value)
@@ -506,7 +488,6 @@ class TicketView(View):
         elif mode == 'selector':
             self.add_item(TicketSelect(self.category_id, selector_content, self.roles_visibles_ids))
             
-# Commandes de ticket
 @bot.tree.command(name="ticket-setup", description="Crée un panneau de ticket personnalisable.")
 @describe(
     salon_panel="Le salon où le panneau de ticket sera affiché.",
@@ -559,17 +540,17 @@ async def ticket_setup(
         roles_visibles_ids = [int(r) for r in roles_visibles.split(',') if r.isdigit()] if roles_visibles else []
         webhook_info = webhooks_perso.get(profil_nom)
         view = TicketView(category_tickets.id, roles_ping_ids, mode, roles_visibles_ids, selecteur_contenu_json)
+        message = None
         if webhook_info and webhook_info["webhook"].channel_id == salon_panel.id:
             webhook = webhook_info["webhook"]
-            await webhook.send(embed=embed, username=profil_nom, avatar_url=webhook_info["avatar_url"], view=view)
+            message = await webhook.send(embed=embed, username=profil_nom, avatar_url=webhook_info["avatar_url"], view=view, wait=True)
         else:
             message = await salon_panel.send(embed=embed, view=view)
             if profil_nom and not webhook_info:
                 await interaction.followup.send(f"Le profil `{profil_nom}` n'a pas été trouvé. Le panneau de ticket a été envoyé avec le profil par défaut.", ephemeral=True)
             elif profil_nom and webhook_info and webhook_info["webhook"].channel_id != salon_panel.id:
                  await interaction.followup.send(f"Le profil `{profil_nom}` a été créé dans un autre salon. Le panneau de ticket a été envoyé avec le profil par défaut.", ephemeral=True)
-
-        # --- AJOUT IMPORTANT POUR LA PERSISTANCE ---
+        
         panel_data = {
             "channel_id": salon_panel.id,
             "message_id": message.id,
@@ -581,7 +562,6 @@ async def ticket_setup(
         }
         bot_data["ticket_panels"].append(panel_data)
         save_data(bot_data)
-        # --- FIN DE L'AJOUT ---
         
         await interaction.followup.send(f"Le panneau de ticket a été envoyé dans {salon_panel.mention}.", ephemeral=True)
     
@@ -606,7 +586,6 @@ async def delete_ticket(interaction: discord.Interaction):
     await interaction.response.send_message("Suppression du ticket...", ephemeral=True)
     await channel.delete()
 
-# Événement pour gérer les interactions avec les boutons
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type == discord.InteractionType.component:
@@ -620,6 +599,5 @@ async def on_interaction(interaction: discord.Interaction):
         elif custom_id == "ticket_save_and_delete":
             await handle_save_and_delete_ticket(interaction)
 
-# Point d'entrée
 keep_alive()
 bot.run(token)
