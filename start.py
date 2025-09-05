@@ -6,25 +6,33 @@ import colorsys
 from discord.ui import Button, View, Modal, TextInput, Select
 from discord.app_commands import describe
 from dotenv import load_dotenv
-from keep_alive import keep_alive # 🌐 Importation de la fonction keep_alive
+from keep_alive import keep_alive
 import asyncio
+import random
+import datetime
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.reactions = True
+intents.members = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 webhooks_perso = {}
 rainbow_roles = {}
 bot_data = {}
+giveaways = {}
+log_channels = {}
+join_messages = {}
+# Ajout pour le système d'autorôle
+REACTION_MESSAGE_ID = None
+EMOJI_TO_ROLE = {}
 
-# Fichier pour la persistance des données
-DATA_FILE = "bot_data.json" # 📝 Renommé pour plus de clarté
+DATA_FILE = "bot_data.json"
 
 def save_data(data):
-    """Sauvegarde les données dans un fichier JSON, avec gestion des erreurs."""
     try:
         os.makedirs(os.path.dirname(DATA_FILE) or '.', exist_ok=True)
         with open(DATA_FILE, 'w') as f:
@@ -34,7 +42,6 @@ def save_data(data):
         print(f"Erreur lors de la sauvegarde des données : {e}")
 
 def load_data():
-    """Charge les données depuis un fichier JSON, avec gestion des erreurs."""
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r') as f:
@@ -51,11 +58,9 @@ def load_data():
             print(f"Erreur lors du chargement des données : {e}")
     
     print("Fichier de données non trouvé ou erreur. Création de données par défaut.")
-    return {"ticket_panels": [], "ticket_logs": {}}
+    return {"ticket_panels": [], "ticket_logs": {}, "log_channels": {}, "join_messages": {}}
 
-# Fonctions utilitaires
 def chunk_text(text, chunk_size=1900):
-    """Découpe une longue chaîne de caractères en morceaux plus petits."""
     return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
 
 async def handle_claim_ticket(interaction: discord.Interaction):
@@ -116,8 +121,10 @@ async def on_ready():
     await bot.tree.sync()
     print(f'Connecté en tant que {bot.user}')
     print('Le bot est prêt à utiliser les commandes slash.')
-    global bot_data
+    global bot_data, log_channels, join_messages
     bot_data = load_data()
+    log_channels = bot_data.get("log_channels", {})
+    join_messages = bot_data.get("join_messages", {})
     for panel in bot_data.get("ticket_panels", []):
         view = TicketView(
             category_id=panel['category_id'],
@@ -127,6 +134,273 @@ async def on_ready():
             selector_content=panel.get('selector_content')
         )
         bot.add_view(view)
+
+@bot.event
+async def on_member_join(member):
+    guild_id = str(member.guild.id)
+    if guild_id in join_messages:
+        message_config = join_messages[guild_id]
+        embed = discord.Embed(
+            title=message_config.get("title", "Bienvenue !"),
+            description=message_config.get("description", "Bienvenue sur le serveur !"),
+            color=discord.Color.green()
+        )
+        support_link = message_config.get("support_link")
+        if support_link:
+            embed.add_field(name="Besoin d'aide ?", value=f"[Rejoindre le serveur de support]({support_link})", inline=False)
+        
+        try:
+            await member.send(embed=embed)
+            print(f"Message de bienvenue envoyé à {member.name}")
+        except discord.Forbidden:
+            print(f"Impossible d'envoyer un message privé à {member.name}. Les DMs sont désactivés.")
+        except Exception as e:
+            print(f"Une erreur est survenue lors de l'envoi du message privé à {member.name}: {e}")
+
+@bot.tree.command(name="setup-join-message", description="Configure le message de bienvenue envoyé en MP aux nouveaux membres.")
+@describe(
+    titre="Le titre de l'embed de bienvenue.",
+    description_message="Le contenu du message de bienvenue.",
+    lien_support="Le lien du serveur de support (facultatif)."
+)
+async def setup_join_message(interaction: discord.Interaction, titre: str, description_message: str, lien_support: str = None):
+    guild_id = str(interaction.guild.id)
+    join_messages[guild_id] = {
+        "title": titre,
+        "description": description_message,
+        "support_link": lien_support
+    }
+    bot_data["join_messages"] = join_messages
+    save_data(bot_data)
+    
+    await interaction.response.send_message(
+        "Le message de bienvenue en MP a été configuré avec succès !",
+        ephemeral=True
+    )
+
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot:
+        return
+    
+    guild_id = str(message.guild.id)
+    if guild_id in log_channels:
+        log_channel = bot.get_channel(int(log_channels[guild_id]))
+        
+        if log_channel:
+            embed = discord.Embed(
+                title="🗑️ Message supprimé",
+                description=f"**Contenu :**\n{message.content}\n\n"
+                            f"[Aller au message (Lien masqué)]({message.jump_url})",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.now()
+            )
+            embed.set_author(name=message.author.display_name, icon_url=message.author.avatar.url)
+            embed.add_field(name="Salon", value=message.channel.mention, inline=True)
+            embed.add_field(name="ID Utilisateur", value=message.author.id, inline=True)
+            embed.add_field(name="ID Message", value=message.id, inline=True)
+            
+            await log_channel.send(embed=embed)
+
+@bot.event
+async def on_message_edit(before, after):
+    if before.author.bot or before.content == after.content:
+        return
+    
+    guild_id = str(before.guild.id)
+    if guild_id in log_channels:
+        log_channel = bot.get_channel(int(log_channels[guild_id]))
+        
+        if log_channel:
+            embed = discord.Embed(
+                title="✍️ Message modifié",
+                description=f"**Ancien contenu :**\n{before.content}\n\n"
+                            f"**Nouveau contenu :**\n{after.content}\n\n"
+                            f"[Aller au message (Lien masqué)]({after.jump_url})",
+                color=discord.Color.orange(),
+                timestamp=datetime.datetime.now()
+            )
+            embed.set_author(name=before.author.display_name, icon_url=before.author.avatar.url)
+            embed.add_field(name="Salon", value=before.channel.mention, inline=True)
+            embed.add_field(name="ID Utilisateur", value=before.author.id, inline=True)
+            embed.add_field(name="ID Message", value=before.id, inline=True)
+            
+            await log_channel.send(embed=embed)
+
+@bot.event
+async def on_command_completion(ctx):
+    guild_id = str(ctx.guild.id)
+    if guild_id in log_channels:
+        channel = bot.get_channel(int(log_channels[guild_id]))
+        if channel:
+            embed = discord.Embed(
+                title="✨ Commande utilisée",
+                description=f"**Auteur :** {ctx.author.mention}\n"
+                            f"**Salon :** {ctx.channel.mention}\n"
+                            f"**Commande :** `{ctx.command.qualified_name}`\n"
+                            f"**Arguments :** `{ctx.message.content}`",
+                color=discord.Color.purple(),
+                timestamp=datetime.datetime.now()
+            )
+            await channel.send(embed=embed)
+
+async def end_giveaway(message_id, channel_id, winners_count, prize):
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        return
+    try:
+        message = await channel.fetch_message(message_id)
+    except discord.NotFound:
+        return
+    
+    reaction = discord.utils.get(message.reactions, emoji="🎉")
+    if not reaction:
+        await channel.send("Le giveaway a été annulé (pas de réactions).")
+        return
+
+    users = [user async for user in reaction.users() if user != bot.user]
+    
+    if not users:
+        await channel.send(f"Personne n'a participé au giveaway de **{prize}**.")
+        return
+
+    if len(users) < winners_count:
+        winners_count = len(users)
+        await channel.send(f"Pas assez de participants. Seuls {winners_count} gagnants seront tirés au sort.")
+
+    winners = random.sample(users, winners_count)
+    winner_mentions = ' '.join([winner.mention for winner in winners])
+    
+    await channel.send(f"🎉 Le giveaway de **{prize}** est terminé ! 🎉\nFélicitations à {winner_mentions} !")
+    
+    embed = message.embeds[0]
+    embed.title = "🎉 GIVEAWAY TERMINÉ 🎉"
+    embed.description = f"**Prix :** {prize}\n**Gagnant(s) :** {winner_mentions}"
+    embed.color = discord.Color.gold()
+    await message.edit(embed=embed, view=None)
+
+    del giveaways[message_id]
+
+@tasks.loop(seconds=10)
+async def check_giveaways():
+    now = datetime.datetime.now()
+    giveaways_to_end = []
+    
+    for message_id, data in list(giveaways.items()):
+        end_time = data['end_time']
+        if now >= end_time:
+            giveaways_to_end.append(message_id)
+
+    for message_id in giveaways_to_end:
+        data = giveaways[message_id]
+        await end_giveaway(message_id, data['channel_id'], data['winners_count'], data['prize'])
+
+@bot.tree.command(name="giveaway", description="Lance un giveaway !")
+@describe(duree="Durée du giveaway (ex: 10m, 1h, 1j).", gagnants="Nombre de gagnants.", prix="Le prix à gagner.")
+async def create_giveaway(interaction: discord.Interaction, duree: str, gagnants: int, prix: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    if gagnants <= 0:
+        await interaction.followup.send("Le nombre de gagnants doit être supérieur à 0.")
+        return
+
+    unit = duree[-1]
+    value = int(duree[:-1])
+    duration_seconds = 0
+    if unit == 's':
+        duration_seconds = value
+    elif unit == 'm':
+        duration_seconds = value * 60
+    elif unit == 'h':
+        duration_seconds = value * 3600
+    elif unit == 'j':
+        duration_seconds = value * 86400
+    else:
+        await interaction.followup.send("Format de durée invalide. Utilisez 's', 'm', 'h' ou 'j' (ex: 10m).")
+        return
+
+    if duration_seconds <= 0:
+      await interaction.followup.send("La durée du giveaway doit être supérieure à zéro.")
+      return
+
+    end_time = datetime.datetime.now() + datetime.timedelta(seconds=duration_seconds)
+    
+    embed = discord.Embed(
+        title="🎉 Giveaway 🎉",
+        description=f"Réagis avec 🎉 pour participer !\n\n"
+                    f"**Prix :** {prix}\n"
+                    f"**Gagnant(s) :** {gagnants}\n"
+                    f"**Se termine :** <t:{int(end_time.timestamp())}:R>",
+        color=0x2E8B57
+    )
+    embed.set_footer(text=f"Lancé par {interaction.user.display_name} | ID du message: {0}")
+    
+    giveaway_message = await interaction.channel.send(embed=embed)
+    await giveaway_message.add_reaction("🎉")
+
+    embed.set_footer(text=f"Lancé par {interaction.user.display_name} | ID du message: {giveaway_message.id}")
+    await giveaway_message.edit(embed=embed)
+
+    giveaways[giveaway_message.id] = {
+        'channel_id': interaction.channel.id,
+        'winners_count': gagnants,
+        'prize': prix,
+        'end_time': end_time
+    }
+    
+    await interaction.followup.send("Giveaway lancé avec succès !")
+    if not check_giveaways.is_running():
+        check_giveaways.start()
+
+@bot.tree.command(name="reroll", description="Relance un giveaway terminé.")
+@describe(message_id="L'ID du message du giveaway.", gagnants="Le nombre de nouveaux gagnants (facultatif).")
+async def reroll_giveaway(interaction: discord.Interaction, message_id: str, gagnants: int = None):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        original_message = await interaction.channel.fetch_message(int(message_id))
+    except discord.NotFound:
+        await interaction.followup.send("Message non trouvé. Veuillez vérifier l'ID.")
+        return
+    
+    if not original_message.embeds or "giveaway" not in original_message.embeds[0].title.lower():
+        await interaction.followup.send("Ce n'est pas un message de giveaway.")
+        return
+
+    try:
+        prize = original_message.embeds[0].description.split("**Prix :** ")[1].split("\n")[0].strip()
+        reaction = discord.utils.get(original_message.reactions, emoji="🎉")
+        users = [user async for user in reaction.users() if user != bot.user]
+        
+        if not users:
+            await interaction.followup.send("Personne n'a participé à ce giveaway.")
+            return
+
+        if gagnants is not None:
+            winners_count = gagnants
+        else:
+            winners_count_text = original_message.embeds[0].description.split("**Gagnant(s) :** ")[1].split("\n")[0].strip()
+            try:
+                winners_count = int(winners_count_text)
+            except ValueError:
+                winners_count = len(original_message.mentions) if original_message.mentions else 1
+                await interaction.followup.send(f"⚠️ Avertissement : Impossible de trouver le nombre de gagnants original. Relance de {winners_count} gagnant(s) par défaut.", ephemeral=True)
+        
+        if winners_count <= 0:
+            winners_count = 1
+            await interaction.followup.send(f"Le nombre de gagnants spécifié est invalide. Relance de 1 gagnant par défaut.", ephemeral=True)
+        
+        new_winners = random.sample(users, min(winners_count, len(users)))
+        new_winner_mentions = ' '.join([winner.mention for winner in new_winners])
+
+        await interaction.channel.send(
+            f"🎉 Nouveau tirage au sort pour le giveaway de **{prize}** ! 🎉\nFélicitations à {new_winner_mentions} !"
+        )
+        await interaction.followup.send("Giveaway relancé avec succès !")
+        
+    except (IndexError, ValueError) as e:
+        print(f"Erreur de reroll : {e}")
+        await interaction.followup.send("Une erreur est survenue lors du relancement. Le message est peut-être corrompu.")
 
 @bot.tree.command(
     name="get_messages_du_salon",
@@ -246,7 +520,7 @@ async def supprimer_profil_webhook(interaction: discord.Interaction, nom_profil:
     except discord.Forbidden:
         await interaction.followup.send("Je n'ai pas la permission de supprimer ce webhook.")
     except Exception as e:
-        await interaction.followup.send(f"Une erreur est survenue lors de la suppression du webhook : {e}")
+        await interaction.response.send_message(f"Une erreur est survenue lors de la suppression du webhook : {e}")
 
 @tasks.loop(seconds=3.0)
 async def change_role_color():
@@ -585,6 +859,202 @@ async def delete_ticket(interaction: discord.Interaction):
         return
     await interaction.response.send_message("Suppression du ticket...", ephemeral=True)
     await channel.delete()
+
+@bot.tree.command(name="set-log-channel", description="Définit le salon où les logs du bot seront envoyés.")
+@describe(channel="Le salon de logs.")
+@discord.app_commands.default_permissions(manage_channels=True)
+async def set_log_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = str(interaction.guild.id)
+    log_channels[guild_id] = str(channel.id)
+    bot_data["log_channels"] = log_channels
+    save_data(bot_data)
+    await interaction.response.send_message(f"Le salon de logs du bot a été défini sur {channel.mention}.", ephemeral=True)
+
+# Commande pour configurer le panneau d'autorôle basé sur les réactions
+@bot.tree.command(name="setup-reaction-role", description="Configure un panneau d'autorôle basé sur les réactions.")
+@describe(
+    message_text="Le texte du panneau d'autorôle.",
+    roles_json="Une chaîne JSON qui définit les emojis et les rôles (ex: [{'emoji':'🎉','role_id':123456789012345678}])"
+)
+async def setup_reaction_role(interaction: discord.Interaction, message_text: str, roles_json: str):
+    global REACTION_MESSAGE_ID, EMOJI_TO_ROLE
+    
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        roles_data = json.loads(roles_json)
+        EMOJI_TO_ROLE.clear()
+
+        embed = discord.Embed(
+            title="Système d'Auto-Rôle",
+            description=message_text,
+            color=discord.Color.blue()
+        )
+        
+        reaction_text = ""
+        for item in roles_data:
+            emoji = item.get('emoji')
+            role_id = item.get('role_id')
+            if not emoji or not role_id:
+                await interaction.followup.send("Le format JSON est invalide. Chaque élément doit avoir 'emoji' et 'role_id'.", ephemeral=True)
+                return
+
+            role = interaction.guild.get_role(role_id)
+            if not role:
+                await interaction.followup.send(f"Le rôle avec l'ID {role_id} n'a pas été trouvé.", ephemeral=True)
+                return
+            
+            EMOJI_TO_ROLE[emoji] = role_id
+            reaction_text += f"{emoji}: **{role.name}**\n"
+        
+        embed.add_field(name="Rôles Disponibles", value=reaction_text)
+
+        message = await interaction.channel.send(embed=embed)
+        for emoji in EMOJI_TO_ROLE.keys():
+            await message.add_reaction(emoji)
+        
+        REACTION_MESSAGE_ID = message.id
+        await interaction.followup.send("Le panneau d'autorôle a été configuré avec succès !", ephemeral=True)
+
+    except json.JSONDecodeError:
+        await interaction.followup.send("Format JSON invalide. Veuillez vérifier la syntaxe.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Une erreur est survenue : {e}", ephemeral=True)
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    if payload.message_id != REACTION_MESSAGE_ID or payload.member.bot:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+        
+    role_id = EMOJI_TO_ROLE.get(str(payload.emoji))
+    if role_id:
+        member = guild.get_member(payload.user_id)
+        role = guild.get_role(role_id)
+        if member and role:
+            try:
+                await member.add_roles(role)
+                print(f"Rôle {role.name} donné à {member.display_name}")
+            except discord.Forbidden:
+                print(f"Erreur de permissions: impossible de donner le rôle.")
+            except Exception as e:
+                print(f"Erreur lors de l'attribution du rôle: {e}")
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    if payload.message_id != REACTION_MESSAGE_ID:
+        return
+    
+    guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+        
+    role_id = EMOJI_TO_ROLE.get(str(payload.emoji))
+    if role_id:
+        member = guild.get_member(payload.user_id)
+        role = guild.get_role(role_id)
+        if member and role:
+            try:
+                await member.remove_roles(role)
+                print(f"Rôle {role.name} retiré de {member.display_name}")
+            except discord.Forbidden:
+                print(f"Erreur de permissions: impossible de retirer le rôle.")
+            except Exception as e:
+                print(f"Erreur lors du retrait du rôle: {e}")
+
+# Vue et bouton pour le panneau de rôle
+class RoleButtonView(View):
+    def __init__(self, role_id: int):
+        super().__init__(timeout=None)
+        self.role_id = role_id
+
+    @discord.ui.button(label="Obtenir le Rôle", style=discord.ButtonStyle.primary, custom_id="role_button")
+    async def role_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        role = interaction.guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message("Le rôle n'a pas été trouvé.", ephemeral=True)
+            return
+
+        if role in interaction.user.roles:
+            await interaction.user.remove_roles(role)
+            await interaction.response.send_message(f"Le rôle **{role.name}** vous a été retiré.", ephemeral=True)
+        else:
+            await interaction.user.add_roles(role)
+            await interaction.response.send_message(f"Le rôle **{role.name}** vous a été donné.", ephemeral=True)
+
+# Commande pour créer le panneau de rôles avec un bouton
+@bot.tree.command(name="role-button", description="Crée un panneau pour obtenir un rôle via un bouton.")
+@describe(
+    salon="Le salon où le panneau sera envoyé.",
+    titre="Le titre de l'embed du panneau de rôles.",
+    description_message="Le contenu du message.",
+    role="Le rôle à donner/retirer.",
+    texte_bouton="Le texte affiché sur le bouton.",
+    couleur_bouton="La couleur du bouton (bleu, gris, vert, rouge).",
+    profil_nom="Le nom du profil webhook personnalisé (facultatif)."
+)
+@discord.app_commands.choices(couleur_bouton=[
+    discord.app_commands.Choice(name="Bleu (Primaire)", value="primary"),
+    discord.app_commands.Choice(name="Gris (Secondaire)", value="secondary"),
+    discord.app_commands.Choice(name="Vert (Succès)", value="success"),
+    discord.app_commands.Choice(name="Rouge (Danger)", value="danger")
+])
+@discord.app_commands.default_permissions(manage_roles=True)
+async def role_button_command(
+    interaction: discord.Interaction,
+    salon: discord.TextChannel,
+    titre: str,
+    description_message: str,
+    role: discord.Role,
+    texte_bouton: str,
+    couleur_bouton: str,
+    profil_nom: str = None
+):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        if role.position >= interaction.guild.me.top_role.position:
+            await interaction.followup.send("Je ne peux pas gérer ce rôle car il est au-dessus du mien dans la hiérarchie. Veuillez déplacer mon rôle au-dessus.", ephemeral=True)
+            return
+
+        button_style_map = {
+            "primary": discord.ButtonStyle.primary,
+            "secondary": discord.ButtonStyle.secondary,
+            "success": discord.ButtonStyle.success,
+            "danger": discord.ButtonStyle.danger
+        }
+        
+        view = RoleButtonView(role_id=role.id)
+        view.children[0].label = texte_bouton
+        view.children[0].style = button_style_map.get(couleur_bouton, discord.ButtonStyle.primary)
+        
+        embed = discord.Embed(
+            title=titre,
+            description=description_message,
+            color=role.color
+        )
+
+        webhook_info = webhooks_perso.get(profil_nom)
+        if webhook_info and webhook_info["webhook"].channel_id == salon.id:
+            webhook = webhook_info["webhook"]
+            await webhook.send(
+                embed=embed,
+                username=profil_nom,
+                avatar_url=webhook_info["avatar_url"],
+                view=view
+            )
+        else:
+            await salon.send(embed=embed, view=view)
+            if profil_nom:
+                await interaction.followup.send(f"Le profil '{profil_nom}' n'a pas été trouvé ou n'est pas dans le bon salon. Le panneau a été envoyé avec le profil par défaut du bot.", ephemeral=True)
+        
+        await interaction.followup.send("Panneau de rôle envoyé avec succès !", ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"Une erreur s'est produite lors de la création du panneau : {e}", ephemeral=True)
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
