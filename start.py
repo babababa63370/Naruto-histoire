@@ -5,11 +5,12 @@ import json
 import colorsys
 from discord.ui import Button, View, Modal, TextInput, Select
 from discord.app_commands import describe
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from keep_alive import keep_alive
 import asyncio
 import random
-import datetime
+from datetime import datetime, timedelta
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -18,9 +19,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True
 intents.members = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='+', intents=intents)
 
 webhooks_perso = {}
+sanctions = []
 rainbow_roles = {}
 bot_data = {}
 giveaways = {}
@@ -31,6 +33,7 @@ REACTION_MESSAGE_ID = None
 EMOJI_TO_ROLE = {}
 
 DATA_FILE = "bot_data.json"
+MUTE_ROLE_NAME = "Muted"
 
 def save_data(data):
     try:
@@ -177,6 +180,93 @@ async def setup_join_message(interaction: discord.Interaction, titre: str, descr
         "Le message de bienvenue en MP a été configuré avec succès !",
         ephemeral=True
     )
+
+# Commande kick
+@bot.command()
+@commands.has_permissions(kick_members=True)
+async def kick(ctx, member: discord.Member, *, reason="Aucune raison fournie"):
+    await member.kick(reason=reason)
+    sanctions.append((datetime.now(), f"{member} kick par {ctx.author} pour {reason}"))
+    await ctx.send(f"🚪 {member.mention} a été exclu. Raison : {reason}")
+
+# Commande ban
+@bot.command()
+@commands.has_permissions(ban_members=True)
+async def ban(ctx, member: discord.Member, *, reason="Aucune raison fournie"):
+    await member.ban(reason=reason)
+    sanctions.append((datetime.now(), f"{member} banni par {ctx.author} pour {reason}"))
+    await ctx.send(f"🔨 {member.mention} a été banni. Raison : {reason}")
+
+# Commande ban temporaire
+@bot.command()
+@commands.has_permissions(ban_members=True)
+async def tempban(ctx, member: discord.Member, temps: int, *, reason="Aucune raison fournie"):
+    await member.ban(reason=reason)
+    sanctions.append((datetime.now(), f"{member} tempban {temps}s par {ctx.author} pour {reason}"))
+    await ctx.send(f"⏳ {member.mention} a été banni pour {temps} secondes. Raison : {reason}")
+    await asyncio.sleep(temps)
+    await ctx.guild.unban(member)
+    await ctx.send(f"✅ {member.mention} a été débanni après {temps} secondes.")
+
+# Commande mute
+@bot.command()
+@commands.has_permissions(manage_roles=True)
+async def mute(ctx, member: discord.Member, *, reason="Aucune raison fournie"):
+    mute_role = discord.utils.get(ctx.guild.roles, name=MUTE_ROLE_NAME)
+    if not mute_role:
+        mute_role = await ctx.guild.create_role(name=MUTE_ROLE_NAME)
+        for channel in ctx.guild.channels:
+            await channel.set_permissions(mute_role, send_messages=False, speak=False)
+    await member.add_roles(mute_role, reason=reason)
+    sanctions.append((datetime.now(), f"{member} mute par {ctx.author} pour {reason}"))
+    await ctx.send(f"🤐 {member.mention} a été mute. Raison : {reason}")
+
+# Commande mute temporaire
+@bot.command()
+@commands.has_permissions(manage_roles=True)
+async def tempmute(ctx, member: discord.Member, temps: int, *, reason="Aucune raison fournie"):
+    mute_role = discord.utils.get(ctx.guild.roles, name=MUTE_ROLE_NAME)
+    if not mute_role:
+        mute_role = await ctx.guild.create_role(name=MUTE_ROLE_NAME)
+        for channel in ctx.guild.channels:
+            await channel.set_permissions(mute_role, send_messages=False, speak=False)
+    await member.add_roles(mute_role, reason=reason)
+    sanctions.append((datetime.now(), f"{member} tempmute {temps}s par {ctx.author} pour {reason}"))
+    await ctx.send(f"⏳ {member.mention} a été mute pour {temps} secondes. Raison : {reason}")
+    await asyncio.sleep(temps)
+    await member.remove_roles(mute_role)
+    await ctx.send(f"✅ {member.mention} n'est plus mute.")
+
+# Commande lock channel
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def lock(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    overwrite = channel.overwrites_for(ctx.guild.default_role)
+    overwrite.send_messages = False
+    await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+    sanctions.append((datetime.now(), f"{channel} lock par {ctx.author}"))
+    await ctx.send(f"🔒 Le salon {channel.mention} est maintenant verrouillé.")
+
+# Commande liste des sanctions
+@bot.command()
+async def list(ctx):
+    if not sanctions:
+        await ctx.send("📂 Aucune sanction enregistrée.")
+    else:
+        message = "\n".join([f"[{t.strftime('%d/%m %H:%M')}] {s}" for t, s in sanctions[-10:]])
+        await ctx.send(f"📜 **Dernières sanctions :**\n{message}")
+
+# Erreurs de permission
+@kick.error
+@ban.error
+@tempban.error
+@mute.error
+@tempmute.error
+@lock.error
+async def permission_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Tu n’as pas les permissions nécessaires.")
 
 @bot.event
 async def on_message_delete(message):
@@ -1071,3 +1161,4 @@ async def on_interaction(interaction: discord.Interaction):
 
 keep_alive()
 bot.run(token)
+
