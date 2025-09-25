@@ -181,34 +181,57 @@ async def setup_join_message(interaction: discord.Interaction, titre: str, descr
         ephemeral=True
     )
 
-# Commande kick
+
+
+# =========================
+# 🚪 Gestion des membres
+# =========================
+
+# Kick
 @bot.command()
 @commands.has_permissions(kick_members=True)
 async def kick(ctx, member: discord.Member, *, reason="Aucune raison fournie"):
     await member.kick(reason=reason)
-    sanctions.append((datetime.now(), f"{member} kick par {ctx.author} pour {reason}"))
+    sanctions.append((datetime.now(), f"🚪 {member} exclu par {ctx.author} | Raison : {reason}"))
     await ctx.send(f"🚪 {member.mention} a été exclu. Raison : {reason}")
 
-# Commande ban
+# Ban
 @bot.command()
 @commands.has_permissions(ban_members=True)
 async def ban(ctx, member: discord.Member, *, reason="Aucune raison fournie"):
     await member.ban(reason=reason)
-    sanctions.append((datetime.now(), f"{member} banni par {ctx.author} pour {reason}"))
+    sanctions.append((datetime.now(), f"🔨 {member} banni par {ctx.author} | Raison : {reason}"))
     await ctx.send(f"🔨 {member.mention} a été banni. Raison : {reason}")
 
-# Commande ban temporaire
+# Tempban
 @bot.command()
 @commands.has_permissions(ban_members=True)
 async def tempban(ctx, member: discord.Member, temps: int, *, reason="Aucune raison fournie"):
     await member.ban(reason=reason)
-    sanctions.append((datetime.now(), f"{member} tempban {temps}s par {ctx.author} pour {reason}"))
+    sanctions.append((datetime.now(), f"⏳ {member} banni {temps}s par {ctx.author} | Raison : {reason}"))
     await ctx.send(f"⏳ {member.mention} a été banni pour {temps} secondes. Raison : {reason}")
     await asyncio.sleep(temps)
     await ctx.guild.unban(member)
     await ctx.send(f"✅ {member.mention} a été débanni après {temps} secondes.")
 
-# Commande mute
+# Unban
+@bot.command()
+@commands.has_permissions(ban_members=True)
+async def unban(ctx, user: str):
+    banned_users = await ctx.guild.bans()
+    for ban_entry in banned_users:
+        if user in (str(ban_entry.user), str(ban_entry.user.id)):
+            await ctx.guild.unban(ban_entry.user)
+            sanctions.append((datetime.now(), f"♻️ {ban_entry.user} débanni par {ctx.author}"))
+            return await ctx.send(f"♻️ {ban_entry.user} a été débanni.")
+    await ctx.send("❌ Utilisateur non trouvé dans la liste des bannis.")
+
+
+# =========================
+# 🤐 Gestion des mutes
+# =========================
+
+# Mute
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def mute(ctx, member: discord.Member, *, reason="Aucune raison fournie"):
@@ -218,10 +241,10 @@ async def mute(ctx, member: discord.Member, *, reason="Aucune raison fournie"):
         for channel in ctx.guild.channels:
             await channel.set_permissions(mute_role, send_messages=False, speak=False)
     await member.add_roles(mute_role, reason=reason)
-    sanctions.append((datetime.now(), f"{member} mute par {ctx.author} pour {reason}"))
+    sanctions.append((datetime.now(), f"🤐 {member} mute par {ctx.author} | Raison : {reason}"))
     await ctx.send(f"🤐 {member.mention} a été mute. Raison : {reason}")
 
-# Commande mute temporaire
+# Tempmute
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def tempmute(ctx, member: discord.Member, temps: int, *, reason="Aucune raison fournie"):
@@ -231,13 +254,30 @@ async def tempmute(ctx, member: discord.Member, temps: int, *, reason="Aucune ra
         for channel in ctx.guild.channels:
             await channel.set_permissions(mute_role, send_messages=False, speak=False)
     await member.add_roles(mute_role, reason=reason)
-    sanctions.append((datetime.now(), f"{member} tempmute {temps}s par {ctx.author} pour {reason}"))
+    sanctions.append((datetime.now(), f"⏳ {member} mute {temps}s par {ctx.author} | Raison : {reason}"))
     await ctx.send(f"⏳ {member.mention} a été mute pour {temps} secondes. Raison : {reason}")
     await asyncio.sleep(temps)
     await member.remove_roles(mute_role)
     await ctx.send(f"✅ {member.mention} n'est plus mute.")
 
-# Commande lock channel
+# Unmute
+@bot.command()
+@commands.has_permissions(manage_roles=True)
+async def unmute(ctx, member: discord.Member):
+    mute_role = discord.utils.get(ctx.guild.roles, name=MUTE_ROLE_NAME)
+    if mute_role in member.roles:
+        await member.remove_roles(mute_role)
+        sanctions.append((datetime.now(), f"♻️ {member} unmute par {ctx.author}"))
+        await ctx.send(f"♻️ {member.mention} n'est plus mute.")
+    else:
+        await ctx.send("❌ Ce membre n'est pas mute.")
+
+
+# =========================
+# 🔒 Gestion des salons
+# =========================
+
+# Lock
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def lock(ctx, channel: discord.TextChannel = None):
@@ -245,29 +285,60 @@ async def lock(ctx, channel: discord.TextChannel = None):
     overwrite = channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = False
     await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
-    sanctions.append((datetime.now(), f"{channel} lock par {ctx.author}"))
-    await ctx.send(f"🔒 Le salon {channel.mention} est maintenant verrouillé.")
+    sanctions.append((datetime.now(), f"🔒 {channel} verrouillé par {ctx.author}"))
+    await ctx.send(f"🔒 Le salon {channel.mention} est verrouillé.")
 
-# Commande liste des sanctions
+# Unlock
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def unlock(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    overwrite = channel.overwrites_for(ctx.guild.default_role)
+    overwrite.send_messages = None
+    await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+    sanctions.append((datetime.now(), f"🔓 {channel} déverrouillé par {ctx.author}"))
+    await ctx.send(f"🔓 Le salon {channel.mention} est déverrouillé.")
+
+
+# =========================
+# 📜 Liste des sanctions
+# =========================
+
 @bot.command()
 async def list(ctx):
     if not sanctions:
-        await ctx.send("📂 Aucune sanction enregistrée.")
-    else:
-        message = "\n".join([f"[{t.strftime('%d/%m %H:%M')}] {s}" for t, s in sanctions[-10:]])
-        await ctx.send(f"📜 **Dernières sanctions :**\n{message}")
+        return await ctx.send("📂 Aucune sanction enregistrée.")
 
-# Erreurs de permission
+    embed = discord.Embed(
+        title="📜 Dernières sanctions",
+        color=discord.Color.red(),
+        timestamp=datetime.now()
+    )
+    for t, s in sanctions[-10:]:
+        embed.add_field(
+            name=t.strftime("%d/%m %H:%M"),
+            value=s,
+            inline=False
+        )
+    await ctx.send(embed=embed)
+
+
+# =========================
+# 🔧 Erreurs de permission
+# =========================
+
 @kick.error
 @ban.error
 @tempban.error
 @mute.error
 @tempmute.error
 @lock.error
+@unlock.error
+@unban.error
+@unmute.error
 async def permission_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ Tu n’as pas les permissions nécessaires.")
-
 @bot.event
 async def on_message_delete(message):
     if message.author.bot:
@@ -1161,4 +1232,5 @@ async def on_interaction(interaction: discord.Interaction):
 
 keep_alive()
 bot.run(token)
+
 
